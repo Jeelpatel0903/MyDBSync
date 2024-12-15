@@ -1,0 +1,209 @@
+using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Configuration;
+
+class Program 
+{
+    private static IConfigurationRoot _configuration;
+    private static string _scriptsFolder;
+
+    static async Task Main(string[] args)
+    {
+        Console.WriteLine("SQL Script Executor Started...\n");
+
+        // Load configuration
+        _configuration = new ConfigurationBuilder()
+            .SetBasePath(Directory.GetCurrentDirectory())
+            .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+            .Build();
+
+        _scriptsFolder = _configuration["ScriptsFolder"];
+        var databases = _configuration.GetSection("Databases").Get<List<DatabaseConfiguration>>();
+
+        List<DatabaseSummary> summaries = new();
+
+        // Process scripts for each database
+        foreach (var dbConfig in databases)
+        {
+            Console.WriteLine($"\n\n********** Processing Database: {dbConfig.Name} **********");
+            var summary = await ProcessScriptsForDatabase(dbConfig);
+            summaries.Add(summary);
+        }
+
+        // Display summary table
+        DisplaySummaryTable(summaries);
+
+        Console.WriteLine("\n\n********** All Databases Processed **********");
+    }
+
+    private static async Task<DatabaseSummary> ProcessScriptsForDatabase(DatabaseConfiguration dbConfig)
+    {
+        var folders = new[] { "Tables", "Views", "Functions", "StoredProcedures", "UDTs" };
+
+        int totalFiles = 0;
+        int executedFiles = 0;
+        int skippedFiles = 0;
+
+        foreach (var folder in folders)
+        {
+            var scriptPath = Path.Combine(_scriptsFolder, folder);
+
+            if (!Directory.Exists(scriptPath))
+            {
+                Console.WriteLine($"Folder '{folder}' not found. Skipping...");
+                continue;
+            }
+
+            var scriptFiles = Directory.GetFiles(scriptPath, "*.sql")
+                                        .OrderBy(file => file) // Ensure correct execution order
+                                        .ToArray();
+
+            totalFiles += scriptFiles.Length;
+            Console.WriteLine($"\nProcessing {folder} ({scriptFiles.Length} scripts):");
+
+            foreach (var file in scriptFiles)
+            {
+                var result = await ProcessScript(file, dbConfig);
+                if (result == ScriptExecutionResult.Executed) executedFiles++;
+                else if (result == ScriptExecutionResult.Skipped) skippedFiles++;
+            }
+        }
+
+        Console.WriteLine($"Database '{dbConfig.Name}': Processing complete.");
+        return new DatabaseSummary
+        {
+            DatabaseName = dbConfig.Name,
+            TotalFiles = totalFiles,
+            ExecutedFiles = executedFiles,
+            SkippedFiles = skippedFiles
+        };
+    }
+
+    private static async Task<ScriptExecutionResult> ProcessScript(string filePath, DatabaseConfiguration dbConfig)
+    {
+        var scriptName = Path.GetFileName(filePath);
+
+        try
+        {
+            Console.WriteLine($"Checking script: {scriptName}");
+
+            if (await IsScriptAlreadyExecuted(scriptName, dbConfig))
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Script {scriptName} already executed. Skipping...");
+                Console.ResetColor();
+                return ScriptExecutionResult.Skipped;
+            }
+
+            var scriptContent = await File.ReadAllTextAsync(filePath);
+            await ExecuteScriptAsync(scriptContent, dbConfig);
+            await LogScriptExecution(scriptName, dbConfig);
+
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"Successfully executed: {scriptName}");
+            Console.ResetColor();
+
+            return ScriptExecutionResult.Executed;
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"Error processing {scriptName}: {ex.Message}");
+            Console.ResetColor();
+            return ScriptExecutionResult.Failed;
+        }
+    }
+
+    private static async Task ExecuteScriptAsync(string script, DatabaseConfiguration dbConfig)
+    {
+        using var connection = new SqlConnection(dbConfig.ConnectionString);
+        await connection.OpenAsync();
+
+        using var command = new SqlCommand(script, connection);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task<bool> IsScriptAlreadyExecuted(string scriptName, DatabaseConfiguration dbConfig)
+    {
+        using var connection = new SqlConnection(dbConfig.ConnectionString);
+        await connection.OpenAsync();
+
+        var query = "SELECT COUNT(1) FROM ScriptExecutionLog WHERE ScriptName = @ScriptName";
+        using var command = new SqlCommand(query, connection);
+        command.Parameters.AddWithValue("@ScriptName", scriptName);
+
+        return (int)await command.ExecuteScalarAsync() > 0;
+    }
+
+    private static async Task LogScriptExecution(string scriptName, DatabaseConfiguration dbConfig)
+    {
+        using var connection = new SqlConnection(dbConfig.ConnectionString);
+        await connection.OpenAsync();
+
+        var query = "INSERT INTO ScriptExecutionLog (ScriptName) VALUES (@ScriptName)";
+        using var command = new SqlCommand(query, connection);
+        command.Parameters.AddWithValue("@ScriptName", scriptName);
+
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static void DisplaySummaryTable(List<DatabaseSummary> summaries)
+    {
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("\nExecution Summary:");
+        Console.WriteLine($"{"Database",-20} {"Total Files",-15} {"Executed",-10} {"Skipped",-10}");
+        Console.ResetColor();
+
+        foreach (var summary in summaries)
+        {
+            Console.WriteLine($"{summary.DatabaseName,-20} {summary.TotalFiles,-15} {summary.ExecutedFiles,-10} {summary.SkippedFiles,-10}");
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+{
+  "ScriptsFolder": "C:\\Users\\Jeel\\source\\repos\\secondWebApiCrud\\MyDbSync\\Scripts\\",
+  "Databases": [
+    {
+      "Name": "EMPDB",
+      "ConnectionString": "Server=LAPTOP-EV3N40JG\\SQLEXPRESS01;Database=EMPDB;Trusted_Connection=True;TrustServerCertificate=True;"
+    }
+  ]
+}
+
+
+
+
+
+    class DatabaseSummary
+    {
+        public string DatabaseName { get; set; }
+        public int TotalFiles { get; set; }
+        public int ExecutedFiles { get; set; }
+        public int SkippedFiles { get; set; }
+    }
+
+    enum ScriptExecutionResult
+    {
+        Executed,
+        Skipped,
+        Failed
+    }
+
+
+
+
+    public class DatabaseConfiguration
+    {
+        public string Name { get; set; }
+        public string ConnectionString { get; set; }
+    }
+
